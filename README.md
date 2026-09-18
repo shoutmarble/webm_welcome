@@ -12,17 +12,33 @@
 That link boots WebVM straight into a Node.js server running *inside* the
 browser VM. To see the page it serves:
 
-1. Wait for the VM to boot — the terminal prints `welcome.avif site serving on port 3000`.
+1. Wait for the VM to boot. The server probes for a working bind every 5 s —
+   before networking is up every probe fails with `EADDRINUSE` (CheerpX can't
+   bind without a network, see quirks below). That is expected.
 2. In the WebVM sidebar, open **Networking** and click **Connect to Tailscale**
    (a free tailnet; the VM joins it as an ephemeral node).
 3. Make sure the device you are browsing from is also on that tailnet
    (e.g. the Tailscale app on your machine).
-4. The terminal prints `http://100.x.x.x:3000/` — open it in your browser.
-   You can also copy the IP from the Networking button.
+4. Within seconds of connecting, the terminal prints
+   `welcome.avif site serving on port <N>` and the Networking button shows
+   `IP: 100.x.x.x` — open `http://<that-IP>:<N>/` in your browser.
 
 WebVM has no localhost port-forwarding into the VM; Tailscale is the
 (supported) way to reach servers running inside it. You can optionally append
 `#authKey=<ephemeral-tailscale-key>` to the URL to skip the interactive login.
+
+## CheerpX quirks this works around
+
+- **No bind before networking** — every `listen()` fails with `EADDRINUSE`
+  until Tailscale connects ([webvm#228](https://github.com/leaningtech/webvm/issues/228)),
+  so the server retries instead of crashing (WebVM restarts `CMD` on exit,
+  which would otherwise crash-loop).
+- **Large responses die mid-stream** — any single response bigger than
+  ~400–550 KB is truncated deterministically (rate-independent, fresh budget
+  per request). `os.networkInterfaces()` and `/proc/net/tcp` are also
+  unimplemented. The page therefore fetches `welcome.avif` in 64 KB
+  `206 Partial Content` range requests and reassembles it as a Blob — the same
+  trick WebVM itself uses to load disk images in 128 KB chunks.
 
 ## Why Node.js and not Bun?
 

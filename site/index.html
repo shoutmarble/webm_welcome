@@ -21,9 +21,42 @@
 		width: auto;
 		height: auto;
 	}
+	#status {
+		position: fixed;
+		left: 1rem;
+		bottom: 1rem;
+		font: 12px/1.4 system-ui, sans-serif;
+		color: #7d8590;
+	}
 </style>
 </head>
 <body>
-<img src="welcome.avif" alt="Welcome" width="3840" height="2160" fetchpriority="high" decoding="async">
+<img id="welcome" src="welcome.avif" alt="Welcome" width="3840" height="2160" fetchpriority="high" decoding="async">
+<div id="status"></div>
+<script type="module">
+// The VM's network path kills responses larger than ~400-550 KB, so fetch the
+// AVIF in small 206 Partial Content chunks and reassemble it as a Blob.
+const img = document.getElementById('welcome');
+const status = document.getElementById('status');
+const CHUNK = 65536;
+try {
+	const probe = await fetch('welcome.avif', { headers: { Range: 'bytes=0-0' } });
+	if (probe.status !== 206) throw new Error('no range support');
+	const total = Number(/\/(\d+)$/.exec(probe.headers.get('Content-Range') || '')[1]);
+	const parts = [];
+	for (let start = 0; start < total; start += CHUNK) {
+		const end = Math.min(start + CHUNK - 1, total - 1);
+		const r = await fetch('welcome.avif', { headers: { Range: `bytes=${start}-${end}` } });
+		if (r.status !== 206) throw new Error(`chunk ${start} failed: HTTP ${r.status}`);
+		parts.push(await r.arrayBuffer());
+		status.textContent = `loading image… ${Math.round((end + 1) / total * 100)}%`;
+	}
+	img.src = URL.createObjectURL(new Blob(parts, { type: 'image/avif' }));
+	status.remove();
+} catch (err) {
+	status.textContent = `chunked load failed: ${err.message}`;
+	console.error(err);
+}
+</script>
 </body>
 </html>

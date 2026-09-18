@@ -72,12 +72,37 @@ function handleRequest(req, res) {
 	}
 	var rel = "/" + path.relative(ROOT, filePath);
 	if (memCache[rel]) {
+		var buf = memCache[rel];
+		var type = MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream";
+		// Single "Range: bytes=a-b" support. The CheerpX -> tailscale path
+		// kills any response larger than ~400-550 KB, so the page fetches
+		// big files in small 206 chunks and reassembles them client-side.
+		var m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range || "");
+		if (m) {
+			var start = Number(m[1]);
+			var end = m[2] ? Math.min(Number(m[2]), buf.length - 1) : buf.length - 1;
+			if (start >= buf.length || end < start) {
+				res.writeHead(416, { "Content-Range": "bytes */" + buf.length });
+				res.end();
+				return;
+			}
+			res.writeHead(206, {
+				"Content-Type": type,
+				"Content-Length": end - start + 1,
+				"Content-Range": "bytes " + start + "-" + end + "/" + buf.length,
+				"Accept-Ranges": "bytes",
+				"Cache-Control": "no-cache"
+			});
+			res.end(buf.subarray(start, end + 1));
+			return;
+		}
 		res.writeHead(200, {
-			"Content-Type": MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream",
-			"Content-Length": memCache[rel].length,
+			"Content-Type": type,
+			"Content-Length": buf.length,
+			"Accept-Ranges": "bytes",
 			"Cache-Control": "no-cache"
 		});
-		res.end(memCache[rel]);
+		res.end(buf);
 		return;
 	}
 	fs.stat(filePath, function (err, st) {
