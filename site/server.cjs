@@ -36,6 +36,19 @@ var MIME = {
 	".woff2": "font/woff2"
 };
 
+// Diagnostics: in CheerpX the 751818-byte welcome.avif truncated at exactly
+// 409443 bytes on every request. Isolate which side dies:
+//  - preloading the file into RAM at boot fails loudly if the ext2 read is bad
+//  - serving /rand (1 MB generated in memory, no disk) tests the socket side
+var memCache = {};
+try {
+	memCache["/welcome.avif"] = fs.readFileSync(path.join(ROOT, "welcome.avif"));
+	console.log("preload welcome.avif OK: " + memCache["/welcome.avif"].length + " bytes");
+} catch (err) {
+	console.log("preload welcome.avif FAILED: " + (err && err.code) + " " + (err && err.message));
+}
+var randBuf = require("crypto").randomBytes(1024 * 1024);
+
 function handleRequest(req, res) {
 	var urlPath;
 	try {
@@ -45,11 +58,26 @@ function handleRequest(req, res) {
 		res.end("Bad request");
 		return;
 	}
+	if (urlPath === "/rand") {
+		res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": randBuf.length });
+		res.end(randBuf);
+		return;
+	}
 	if (urlPath.endsWith("/")) urlPath += "index.html";
 	var filePath = path.normalize(path.join(ROOT, urlPath));
 	if (filePath !== ROOT && filePath.indexOf(ROOT + path.sep) !== 0) {
 		res.writeHead(403);
 		res.end("Forbidden");
+		return;
+	}
+	var rel = "/" + path.relative(ROOT, filePath);
+	if (memCache[rel]) {
+		res.writeHead(200, {
+			"Content-Type": MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream",
+			"Content-Length": memCache[rel].length,
+			"Cache-Control": "no-cache"
+		});
+		res.end(memCache[rel]);
 		return;
 	}
 	fs.stat(filePath, function (err, st) {
