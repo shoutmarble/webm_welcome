@@ -34,23 +34,63 @@
 <img id="welcome" src="welcome.avif" alt="Welcome" width="3840" height="2160" fetchpriority="high" decoding="async">
 <div id="status"></div>
 <script type="module">
-// The VM's network path kills responses larger than ~400-550 KB, so fetch the
-// AVIF in small 206 Partial Content chunks and reassemble it as a Blob.
+// The VM's network path truncates responses mid-stream at a threshold that
+// varies over time (~400 KB fresh, observed dropping to ~65 KB). So the AVIF
+// is fetched in small 206 Partial Content windows, reading each response as a
+// STREAM so truncated bodies are kept, and resuming the next request where
+// the previous one died. Converges as long as any bytes flow.
 const img = document.getElementById('welcome');
 const status = document.getElementById('status');
-const CHUNK = 65536;
-try {
-	const probe = await fetch('welcome.avif', { headers: { Range: 'bytes=0-0' } });
-	if (probe.status !== 206) throw new Error('no range support');
-	const total = Number(/\/(\d+)$/.exec(probe.headers.get('Content-Range') || '')[1]);
-	const parts = [];
-	for (let start = 0; start < total; start += CHUNK) {
-		const end = Math.min(start + CHUNK - 1, total - 1);
-		const r = await fetch('welcome.avif', { headers: { Range: `bytes=${start}-${end}` } });
-		if (r.status !== 206) throw new Error(`chunk ${start} failed: HTTP ${r.status}`);
-		parts.push(await r.arrayBuffer());
-		status.textContent = `loading image… ${Math.round((end + 1) / total * 100)}%`;
+const WINDOW = 32768;
+const MAX_ATTEMPTS = 500;
+const MAX_STALLS = 20;
+
+async function fetchWindow(start, end) {
+	const r = await fetch('welcome.avif', { headers: { Range: `bytes=${start}-${end}` } });
+	if (r.status !== 206) throw new Error(`HTTP ${r.status}`);
+	const total = Number(/\/(\d+)$/.exec(r.headers.get('Content-Range') || '')[1]);
+	const reader = r.body.getReader();
+	const chunks = [];
+	let got = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			chunks.push(value);
+			got += value.byteLength;
+		}
+	} catch {
+		// truncated stream — keep what arrived, the caller resumes from pos+got
 	}
+	try { await reader.cancel(); } catch {}
+	return { chunks, got, total };
+}
+
+try {
+	let total = 0, pos = 0, stalls = 0;
+	const parts = [];
+	for (let attempts = 0; attempts < MAX_ATTEMPTS && (total === 0 || pos < total); attempts++) {
+		const end = total === 0 ? pos + WINDOW - 1 : Math.min(pos + WINDOW - 1, total - 1);
+		let w;
+		try {
+			w = await fetchWindow(pos, end);
+		} catch (err) {
+			if (++stalls > MAX_STALLS) throw new Error(`connection stalled at ${pos}/${total || '?'} bytes`);
+			await new Promise(s => setTimeout(s, 300));
+			continue;
+		}
+		if (w.got === 0) {
+			if (++stalls > MAX_STALLS) throw new Error(`no progress at ${pos}/${total || '?'} bytes`);
+			await new Promise(s => setTimeout(s, 300));
+			continue;
+		}
+		stalls = 0;
+		if (total === 0) total = w.total;
+		parts.push(...w.chunks);
+		pos += w.got;
+		status.textContent = `loading image… ${Math.round(pos / total * 100)}%`;
+	}
+	if (pos < total) throw new Error(`gave up at ${pos}/${total} bytes`);
 	img.src = URL.createObjectURL(new Blob(parts, { type: 'image/avif' }));
 	status.remove();
 } catch (err) {
