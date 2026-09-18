@@ -5,7 +5,7 @@
 	import '$lib/global.css';
 	import '@xterm/xterm/css/xterm.css'
 	import '@fortawesome/fontawesome-free/css/all.min.css'
-	import { networkInterface, startLogin } from '$lib/network.js'
+	import { networkInterface, networkData, startLogin } from '$lib/network.js'
 	import { cpuActivity, diskActivity, cpuPercentage, diskLatency } from '$lib/activities.js'
 	import { introMessage, errorMessage, unexpectedErrorMessage } from '$lib/messages.js'
 	import { displayConfig, handleToolImpl } from '$lib/anthropic.js'
@@ -316,6 +316,14 @@
 		cx.registerCallback("diskActivity", hddCallback);
 		cx.registerCallback("diskLatency", latencyCallback);
 		cx.registerCallback("processCreated", handleProcessCreated);
+		// Deep link: with #authKey= in the URL, join the tailnet as soon as the
+		// VM is up instead of waiting for the Connect button (upstream only
+		// calls networkLogin from the click handler).
+		if(networkInterface.authKey)
+		{
+			networkData.connectionState.set("DOWNLOADING");
+			cx.networkLogin();
+		}
 		term.scrollToBottom();
 		cxReadFunc = cx.setCustomConsole(writeData, term.cols, term.rows);
 		const display = document.getElementById("display");
