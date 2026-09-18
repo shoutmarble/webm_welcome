@@ -2,14 +2,16 @@
 // Dependency-free static file server for WebVM (32-bit Debian in the browser).
 // Serves index.html + welcome.avif on 0.0.0.0 so the VM's Tailscale IP can reach it.
 //
-// Binding can fail right after boot (e.g. EADDRINUSE before the Tailscale
-// network interface is up — CheerpX's lwIP behaves oddly with no network, see
-// leaningtech/webvm#228). Instead of crashing (WebVM restarts CMD on exit,
-// producing a crash loop), we wait and retry, and fall back to other ports.
+// CheerpX quirks this works around (see leaningtech/webvm#228):
+//  - bind() can fail right after boot, before Tailscale networking is up
+//    (EADDRINUSE on the first listen). WebVM restarts CMD on exit, so crashing
+//    produces a crash loop — instead we wait, retry, and fall back to other
+//    ports until one binds.
+//  - os.networkInterfaces() hangs forever (netlink is not implemented), so we
+//    must not touch it; the tailnet IP is read from the WebVM sidebar instead.
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 
 var ROOT = __dirname;
 var HOST = "0.0.0.0";
@@ -63,9 +65,8 @@ var server = http.createServer(function (req, res) {
 	});
 });
 
-// ---- diagnostics -----------------------------------------------------------
-
 // List TCP listeners from /proc (state 0A = LISTEN) to see who holds a port.
+// Note: CheerpX does not implement /proc/net/tcp (ENOENT), kept for real Linux.
 function dumpListeners() {
 	["/proc/net/tcp", "/proc/net/tcp6"].forEach(function (f) {
 		try {
@@ -81,41 +82,7 @@ function dumpListeners() {
 			console.log("  cannot read " + f + ": " + err.code);
 		}
 	});
-	try {
-		console.log("  networkInterfaces: " + JSON.stringify(os.networkInterfaces()));
-	} catch (err) {
-		console.log("  networkInterfaces() failed: " + err.message);
-	}
 }
-
-// ---- tailscale address announcer -------------------------------------------
-
-var boundPort = 0;
-function tailscaleUrls() {
-	var urls = [];
-	var ifaces = os.networkInterfaces();
-	Object.keys(ifaces).forEach(function (name) {
-		(ifaces[name] || []).forEach(function (addr) {
-			if (addr.family === "IPv4" && /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(addr.address)) {
-				urls.push("http://" + addr.address + ":" + boundPort + "/");
-			}
-		});
-	});
-	return urls;
-}
-
-var announced = false;
-function announce() {
-	var urls = tailscaleUrls();
-	if (urls.length > 0 && !announced) {
-		announced = true;
-		console.log("\nTailscale is up. Open this on any machine in your tailnet:");
-		urls.forEach(function (u) { console.log("  " + u); });
-	}
-	if (urls.length === 0) announced = false;
-}
-
-// ---- resilient listen ------------------------------------------------------
 
 var diagnosed = false;
 function tryListen(index) {
@@ -137,14 +104,13 @@ function tryListen(index) {
 	};
 	var onListening = function () {
 		cleanup();
-		boundPort = port;
 		console.log("welcome.avif site serving on port " + port);
 		console.log("");
 		console.log("To view it:");
 		console.log("  1. In the WebVM sidebar, open Networking and click 'Connect to Tailscale'.");
 		console.log("  2. Make sure the device you browse from is on the same tailnet.");
-		console.log("  3. Open the http://100.x.x.x:" + port + " URL printed here once connected.");
-		announce();
+		console.log("  3. The Networking button then shows 'IP: 100.x.x.x' - open");
+		console.log("     http://<that-IP>:" + port + "/ in your browser.");
 	};
 	var cleanup = function () {
 		server.removeListener("error", onError);
@@ -156,6 +122,3 @@ function tryListen(index) {
 }
 
 tryListen(0);
-
-var timer = setInterval(announce, 5000);
-timer.unref();
