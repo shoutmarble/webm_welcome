@@ -1,0 +1,16 @@
+FROM --platform=linux/386 docker.io/i386/debian:buster-slim
+ARG DEBIAN_FRONTEND=noninteractive
+ARG NODE_VERSION=v20.19.5
+
+# WebVM (CheerpX) is 32-bit x86 only. Bun ships no 32-bit builds, so this
+# uses the unofficial Node.js "linux-x86" tarball instead of apt (Buster is EOL).
+ADD https://unofficial-builds.nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-x86.tar.gz /tmp/node.tar.gz
+RUN tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
+	&& rm /tmp/node.tar.gz \
+	&& /usr/local/bin/node --version
+
+RUN useradd -m user && echo "user:password" | chpasswd
+COPY --chown=user:user ./site /home/user/site
+WORKDIR /home/user/site
+ENV HOME="/home/user" TERM="xterm" USER="user" SHELL="/bin/bash" LANG="C.UTF-8"
+CMD ["/usr/local/bin/node", "/home/user/site/server.cjs"]
